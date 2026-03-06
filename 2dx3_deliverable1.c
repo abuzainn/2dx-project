@@ -6,6 +6,11 @@
 #include "PLL.h"
 #include "SysTick.h"
 
+//Setting up ints - WE CANNOT USE BOOL
+int MotorRunning = 0;
+int CW = 1;
+bool FullStep = 1;
+
 void PortJ_Init(void) //Port J is for the two onboard user switches (what does this mean?)
 {
   //is this right? CHECK LATER
@@ -71,7 +76,103 @@ bool Button2Pressed() //controlled by PM0
   return (GPIO_PORTM_DATA_R & 0x01) == 1;
 }
 
-bool Button3Pressed() //controlled by PM1
+bool Button3Pressed()
 {
   return (GPIO_PORTM_DATA_R & 0x02) == 1;
+}
+
+void FullStepSpinCW() 
+{
+	uint32_t delay = 1;	
+  while(1)
+    {
+		GPIO_PORTM_DATA_R = 0b00000011;
+		SysTick_Wait10ms(delay);
+		GPIO_PORTM_DATA_R = 0b00000110;			
+		SysTick_Wait10ms(delay);
+		GPIO_PORTM_DATA_R = 0b00001100;	
+		SysTick_Wait10ms(delay);
+		GPIO_PORTM_DATA_R = 0b00001001;
+		SysTick_Wait10ms(delay);
+    }
+}
+
+void FullStepSpinCCW() 
+{
+	uint32_t delay = 1;	
+  while(1)
+    {
+		GPIO_PORTM_DATA_R = 0b00001001; //0b00001001
+		SysTick_Wait10ms(delay);
+		GPIO_PORTM_DATA_R = 0b00001100;	//0b00001100	
+		SysTick_Wait10ms(delay);
+		GPIO_PORTM_DATA_R = 0b00000110;	//0b00000110
+		SysTick_Wait10ms(delay);
+		GPIO_PORTM_DATA_R = 0b00000011; //0b00000011
+		SysTick_Wait10ms(delay);
+    
+    }
+}
+
+
+int main(void)
+{
+  PLL_Init();
+  SysTick_Init();
+  PortM_Init();
+  PortJ_Init();
+  PortH_Init();
+  PortN_Init();
+  PortF_Init();
+  while(1)
+  {
+    //pressing button 0 toggles motor operation
+    if(Button0Pressed())
+    {
+      if(MotorRunning == 1)//turning off motor
+      {
+        MotorRunning = 0;
+        GPIO_PORTN_DATA_R &= 0xFD; //turning off light
+      }
+      else //turning on motor
+      {
+        MotorRunning = 1; 
+        GPIO_PORTN_DATA_R |= 0x02; //turning on light
+      }
+    }
+    //Button 1 flips the direction, we will simply toggle between CW and !CW (CCW)
+    if(Button1Pressed())
+    {
+      if(CW == 1) //turning off
+      {
+        CW = 0;
+        GPIO_PORTN_DATA_R &= 0xFE;
+      }
+      else //turning on
+      {
+        CW = 1;
+        GPIO_PORTN_DATA_R |= 0x01;
+      }
+    }
+    //Button 2 controls the angle, we will toggle the FullStep variable
+    if(Button2Pressed())
+    {
+      if(FullStep == 1)
+      {
+        FullStep = 0; 
+        //something with the lights
+      }
+      else
+      {
+        FullStep = 1;
+        //something with the light
+      }
+    }
+    if(Button3Pressed())
+    {
+      //this should go home and motor goes to 0 deg. (WHAT DOES THIS MEAN)
+      //does this break
+    }
+  }  
+  return 0;
 }
