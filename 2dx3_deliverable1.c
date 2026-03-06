@@ -23,7 +23,7 @@ void PortM_Init(void) //Port M is for implemented buttons
   GPIO_PORTM_DIR_R &= 0xFC; //making pins as input
 }
 
-void PortH_Init(void) //Port H is for controlling motor
+void PortH_Init(void) //Port H is for controlling motor. 
 {
   SYSCTL_RCGCPIO_R |= 0x07; //enable clock
   while((SYSCTL_PRGPIO_R & 0x07) == 0){}; 
@@ -31,7 +31,7 @@ void PortH_Init(void) //Port H is for controlling motor
   GPIO_PORTH_DIR_R |= 0x0F; //setting pins as output
 }
 
-void PortN_Init(void) //Controls 2 LEDs
+void PortN_Init(void) //Controls D1 and D2 LEDs
 {
   SYSCTL_RCGCPIO_R |= 0x0C; //enable clock
   while((SYSCTL_PRGPIO_R & 0x0C) == 0){};
@@ -39,7 +39,7 @@ void PortN_Init(void) //Controls 2 LEDs
   GPIO_PORTN_DIR_R |= 0x03; 
 }
 
-void PortF_Init(void) //controls 2 other LEDS
+void PortF_Init(void) //Controls D3 and D4 LEDs
 {
   SYSCTL_RCGCPIO_R |= 0x05;
   while((SYSCTL_PRGPIO_R & 0x05) == 0){};
