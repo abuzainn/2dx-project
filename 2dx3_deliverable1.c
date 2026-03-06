@@ -13,6 +13,7 @@ void PortJ_Init(void) //Port J is for the two onboard user switches (what does t
   while((SYSCTL_PRGPIO_R & 0x08) == 0){};
   GPIO_PORTJ_DIR_R &= 0xFC; // enabling pins 0 and 1 as input
   GPIO_PORTJ_DEN_R |= 0x03; // enabling pins 0 and 1 as GPIO
+  GPIO_PORTJ_PDR_R |= 0x03; // enabling internal pulldown
   return;
 }
 
@@ -22,6 +23,7 @@ void PortM_Init(void) //Port M is for implemented buttons
   while((SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R11) == 0){}; // wait for the clock to stabilize
   GPIO_PORTM_DEN_R |= 0x03; //enabling pins 0 and 1
   GPIO_PORTM_DIR_R &= 0xFC; //making pins as input
+  GPIO_PORTM_PDR_R |= 0x03;
   return;
 }
 
@@ -52,3 +54,24 @@ void PortF_Init(void) //Controls D3 and D4 LEDs
   return;
 }
 
+//BUTTON READING FUNCTIONS, going to use pull up resistor
+
+bool Button0Pressed() //controlled by PJ0
+{
+  return (GPIO_PORTJ_DATA_R & 0x01) == 1;
+}
+
+bool Button1Pressed() //controlled by PJ1
+{
+  return (GPIO_PORTJ_DATA_R & 0x02) == 1;
+}
+
+bool Button2Pressed() //controlled by PM0
+{
+  return (GPIO_PORTM_DATA_R & 0x01) == 1;
+}
+
+bool Button3Pressed() //controlled by PM1
+{
+  return (GPIO_PORTM_DATA_R & 0x02) == 1;
+}
