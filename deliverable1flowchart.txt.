@@ -1,0 +1,18 @@
+Short Rundown of the requirements for deliverable 1:
+
+For Button 1:
+  Motor ON -> in fullstep (45 degrees and CCW)
+  Turn on LED D1
+
+For Button 2:
+  Motor ON ->in fullstep (45 degrees and CW)
+  Turn on LED D2
+
+For Button 3:
+  Toggle between fullstep and half step
+  LED D3 on
+  LED D4 blinks between steps
+
+For button 4:
+  Everything off
+
