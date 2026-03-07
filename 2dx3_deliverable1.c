@@ -110,8 +110,8 @@ void AllLEDs_Clear(void) {
 // --- Button read helpers (active high) ----------------------------------------
 uint8_t Button0_Pressed(void) { return (GPIO_PORTJ_DATA_R & 0x01) ? 0 : 1; }
 uint8_t Button1_Pressed(void) { return (GPIO_PORTJ_DATA_R & 0x02) ? 0 : 1; }
-uint8_t Button2_Pressed(void) { return (GPIO_PORTM_DATA_R & 0x02) ? 0 : 1; }
-uint8_t Button3_Pressed(void) { return (GPIO_PORTM_DATA_R & 0x01) ? 0 : 1; }
+uint8_t Button2_Pressed(void) { return (GPIO_PORTM_DATA_R & 0x01) ? 0 : 1; }
+uint8_t Button3_Pressed(void) { return (GPIO_PORTM_DATA_R & 0x02) ? 0 : 1; }
 
 // --- Motor helpers ------------------------------------------------------------
 void Motor_Step(void) {
@@ -234,7 +234,7 @@ int main(void) {
         }
 
         // -- Button 2: Angle toggle --------------------------------------------
-        if (Button3_Pressed()) {
+        if (Button2_Pressed()) {
             WaitForRelease_B2();
             angleFine    = !angleFine;
             stepsToBlink = 0;   // Reset blink counter so blinks align to new angle
@@ -244,7 +244,7 @@ int main(void) {
         }
 
         // -- Button 3: Home ----------------------------------------------------
-        if (Button2_Pressed()) {
+        if (Button23Pressed()) {
             WaitForRelease_B3();
             Motor_GoHome();
             Motor_Off();
