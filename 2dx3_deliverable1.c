@@ -28,7 +28,7 @@ void PortM_Init(void) //Port M is for implemented buttons
   SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R11; //enable clock
   while((SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R11) == 0){}; // wait for the clock to stabilize
   GPIO_PORTM_DEN_R |= 0x03; //enabling pins 0 and 1
-  GPIO_PORTM_DIR_R &= 0xFC; //making pins as input
+  GPIO_PORTM_DIR_R &= ~0x03; //making pins as input
   GPIO_PORTM_PDR_R |= 0x03;
   return;
 }
@@ -105,6 +105,7 @@ void FullStepSpinCW()
 		}
     }
 	MotorRunning = 0;
+	GPIO_PORTN_DATA_R &= ~0x02;
 }
 
 void FullStepSpinCCW() 
@@ -131,6 +132,7 @@ void FullStepSpinCCW()
     
     }
 	MotorRunning = 0; //motor should stop after this function is done
+	GPIO_PORTN_DATA_R &= ~0x02;
 }
 
 void HalfStepSpinCW()
@@ -156,6 +158,7 @@ void HalfStepSpinCW()
 			}
 		}
 	MotorRunning = 0;
+	GPIO_PORTN_DATA_R &= ~0x02;
 }
 
 void HalfStepSpinCCW()
@@ -181,6 +184,7 @@ void HalfStepSpinCCW()
 			}	
 		}
 	MotorRunning = 0;
+	GPIO_PORTN_DATA_R &= ~0x02;
 }
 
 
@@ -201,7 +205,7 @@ int main(void)
       if(MotorRunning == 1)//turning off motor
       {
         MotorRunning = 0;
-        GPIO_PORTN_DATA_R &= 0xFD; //turning off light
+        GPIO_PORTN_DATA_R &= ~0x02; //turning off light
       }
       else //turning on motor
       {
@@ -215,7 +219,7 @@ int main(void)
       if(CW == 1) //turning off
       {
         CW = 0;
-        GPIO_PORTN_DATA_R &= 0xFE;
+        GPIO_PORTN_DATA_R &= ~0x01;
       }
       else //turning on
       {
