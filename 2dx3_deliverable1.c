@@ -3,27 +3,26 @@
 #include "SysTick.h"
 #include "PLL.h"
 
-// --- Motor step configuration -------------------------------------------------
-// 28BYJ-48: 512 half-steps = one full rotation of output shaft
-#define STEPS_PER_REV   4096    // half-steps for a full 360 degree rotation
-#define STEPS_11_25     128     // half-steps per 11.25 degrees  (512 / 32 = 16)
-#define STEPS_45        512     // half-steps per 45 degrees     (512 / 8  = 64)
+//Motor step configuration
+#define STEPS_PER_REV   2048  
+#define STEPS_11_25     64
+#define STEPS_45        256
 
-// --- Half-step sequence for 28BYJ-48 (IN1 IN2 IN3 IN4 on PH0..PH3) ----------
-// Adjust bit order if your wiring differs
-static const uint8_t HALF_STEP[8] = {
-    0x01,  // 0001
-    0x03,  // 0011
-    0x02,  // 0010
-    0x06,  // 0110
-    0x04,  // 0100
-    0x0C,  // 1100
-    0x08,  // 1000
-    0x09   // 1001
+
+static const uint8_t WAVE_DRIVE[8] = {
+
+0x01,
+0x02,
+0x04,
+0x08,
+0x01,
+0x02,
+0x04,
+0x08
 };
 #define SEQ_LEN 8
 
-// --- Globals ------------------------------------------------------------------
+//Global variables
 volatile uint8_t  motorRunning  = 0;   // 0 = stopped, 1 = running
 volatile uint8_t  directionCW   = 1;   // 1 = CW, 0 = CCW
 volatile uint8_t  angleFine     = 1;   // 1 = 11.25 deg, 0 = 45 deg
@@ -33,9 +32,7 @@ volatile uint8_t  angleFine     = 1;   // 1 = 11.25 deg, 0 = 45 deg
          int      stepCount     = 0;   // steps taken since motor started (for auto-stop)
          int      stepsToBlink  = 0;   // steps accumulated toward next blink
 
-// SysTick_Wait10ms(n) is provided by the course header - waits n * 10ms
-
-// --- Port initialisation ------------------------------------------------------
+//Port initialisation
 void PortJ_Init(void) {
     SYSCTL_RCGCGPIO_R |= 0x00000100;    // Enable clock for Port J
     while ((SYSCTL_PRGPIO_R & 0x00000100) == 0) {}
@@ -77,7 +74,7 @@ void PortH_Init(void) {
     GPIO_PORTH_DATA_R &= ~0x0F;    // Motor coils off
 }
 
-// --- LED helpers --------------------------------------------------------------
+//LED helpers
 void LED0_Set(uint8_t on) {             // PN1 - motor running
     if (on) GPIO_PORTN_DATA_R |=  0x02;
     else    GPIO_PORTN_DATA_R &= ~0x02;
@@ -107,15 +104,15 @@ void AllLEDs_Clear(void) {
     GPIO_PORTF_DATA_R &= ~0x11;
 }
 
-// --- Button read helpers (active high) ----------------------------------------
+//Button read helpers
 uint8_t Button0_Pressed(void) { return (GPIO_PORTJ_DATA_R & 0x01) ? 0 : 1; }
 uint8_t Button1_Pressed(void) { return (GPIO_PORTJ_DATA_R & 0x02) ? 0 : 1; }
 uint8_t Button2_Pressed(void) { return (GPIO_PORTM_DATA_R & 0x01) ? 0 : 1; }
 uint8_t Button3_Pressed(void) { return (GPIO_PORTM_DATA_R & 0x02) ? 0 : 1; }
 
-// --- Motor helpers ------------------------------------------------------------
+//Motor helpers
 void Motor_Step(void) {
-    GPIO_PORTH_DATA_R = (GPIO_PORTH_DATA_R & 0xF0) | HALF_STEP[seqIndex];
+    GPIO_PORTH_DATA_R = (GPIO_PORTH_DATA_R & 0xF0) | WAVE_DRIVE[seqIndex];
     SysTick_Wait10ms(1);    // ~10 ms per step; adjust n as needed for motor speed
 }
 
@@ -141,6 +138,8 @@ void Motor_Advance(void) {
     if (stepsToBlink >= stepsPerBlink) {
         stepsToBlink = 0;
         LED3_Toggle();
+				SysTick_Wait10ms(2);
+				LED3_Toggle();
     }
 }
 
@@ -149,6 +148,7 @@ void Motor_GoHome(void) {
     // Calculate steps to home going CW vs CCW and pick shorter path
     int stepsForward  = (homeStep - currentStep + STEPS_PER_REV) % STEPS_PER_REV;
     int stepsBackward = (currentStep - homeStep + STEPS_PER_REV) % STEPS_PER_REV;
+		AllLEDs_Clear();
 
     int steps;
     if (stepsForward <= stepsBackward) {
@@ -169,6 +169,9 @@ void Motor_GoHome(void) {
         }
         Motor_Step();
     }
+		directionCW = 1;
+		angleFine = 1;
+		motorRunning = 0;
 }
 
 // --- Debounce helper ----------------------------------------------------------
@@ -178,11 +181,11 @@ void WaitForRelease_B1(void) { while (Button1_Pressed()) {} SysTick_Wait10ms(2);
 void WaitForRelease_B2(void) { while (Button2_Pressed()) {} SysTick_Wait10ms(2); }
 void WaitForRelease_B3(void) { while (Button3_Pressed()) {} SysTick_Wait10ms(2); }
 
-// --- Main ---------------------------------------------------------------------
+//Main
 int main(void) {
     // Initialise peripherals
-	  SysTick_Init();
-		PLL_Init(); 
+		SysTick_Init();
+		PLL_Init();
     PortJ_Init();
     PortM_Init();
     PortN_Init();
@@ -198,15 +201,16 @@ int main(void) {
     homeStep     = 0;
     stepCount    = 0;
     stepsToBlink = 0;
-
+	
+		//INSTRUCTIONS WERE UNCLEAR, CHANGE IF NEEDED
     LED0_Set(0);    // Motor not running
-    LED1_Set(1);    // CW direction on by default
-    LED2_Set(1);    // 11.25 deg mode on by default
+    LED1_Set(0);    // CW direction on by default, however, on boot, everything must be OFF
+    LED2_Set(0);    // 11.25 deg mode on by default, however, on boot, everything must be OFF
     LED3_Set(0);
 
     while (1) {
 
-        // -- Button 0: Start / Stop --------------------------------------------
+        //Button 0: Start / Stop
         if (Button0_Pressed()) {
             WaitForRelease_B0();
             motorRunning = !motorRunning;
@@ -220,20 +224,25 @@ int main(void) {
                 LED2_Set(angleFine);
             } else {
                 Motor_Off();
-                LED0_Set(0);
-                LED2_Set(0);    // LEDs 2 and 3 off when motor stopped
+								homeStep = currentStep; //updating the home position after each pause (THIS IS WHAT TAS WANT)
+                //MANAGING LEDS WHEN BUTTON PRESSED TO TURN OFF, IF TA MENTIONS, CHANGE
+								LED0_Set(0);
+								LED1_Set(0);
+								LED2_Set(0);
                 LED3_Set(0);
             }
         }
 
-        // -- Button 1: Direction toggle ----------------------------------------
+        //Button 1: Direction toggle
         if (Button1_Pressed()) {
             WaitForRelease_B1();
             directionCW = !directionCW;
+						if(motorRunning){
             LED1_Set(directionCW);
+						}
         }
 
-        // -- Button 2: Angle toggle --------------------------------------------
+        //Button 2: Angle toggle
         if (Button2_Pressed()) {
             WaitForRelease_B2();
             angleFine    = !angleFine;
@@ -243,8 +252,8 @@ int main(void) {
             }
         }
 
-        // -- Button 3: Home ----------------------------------------------------
-        if (Button23Pressed()) {
+        //Button 3: Home
+        if (Button3_Pressed()) {
             WaitForRelease_B3();
             Motor_GoHome();
             Motor_Off();
@@ -257,7 +266,7 @@ int main(void) {
             // All LEDs off per spec: "motor ceases operation with all status outputs cleared"
         }
 
-        // -- Motor running: advance one half-step -----------------------------
+        //Motor running: advance one half-step
         if (motorRunning) {
             Motor_Advance();
 
@@ -267,7 +276,9 @@ int main(void) {
                 motorRunning = 0;
                 stepCount    = 0;
                 stepsToBlink = 0;
+								//MANUAL UNCLEAR, WHAT TURNS OFF AFTER 360 DEGREES
                 LED0_Set(0);
+								LED1_Set(0);
                 LED2_Set(0);
                 LED3_Set(0);
             }
@@ -275,3 +286,11 @@ int main(void) {
 
     }  // end while(1)
 }
+
+void Start()
+{
+main();
+}
+
+
+
