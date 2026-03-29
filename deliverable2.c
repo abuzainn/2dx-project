@@ -55,33 +55,17 @@ void I2C_Init(void){
 //  GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R&0xFFFF00FF)+0x00003300;
   GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R&0xFFFF00FF)+0x00002200;    //TED
     I2C0_MCR_R = I2C_MCR_MFE;                      													// 9) master function enable
-    I2C0_MTPR_R = 0b0000000000000101000000000111011;                       	// 8) configure for 100 kbps clock (added 8 clocks of glitch suppression ~50ns)
+    I2C0_MTPR_R = 0x08;                       	// 8) configure for 100 kbps clock (added 8 clocks of glitch suppression ~50ns)
 //    I2C0_MTPR_R = 0x3B;                                        						// 8) configure for 100 kbps clock
         
 }
 
-void PortJ_Init(void) {
-    SYSCTL_RCGCGPIO_R |= 0x00000100;
-    while ((SYSCTL_PRGPIO_R & 0x00000100) == 0) {}
-    GPIO_PORTJ_DIR_R  &= ~0x03;
-    GPIO_PORTJ_DEN_R  |=  0x03;
-    GPIO_PORTJ_PUR_R  |=  0x03;    // active-low buttons
-}
-
-void PortM_Init(void) {
-    SYSCTL_RCGCGPIO_R |= 0x00000800;
-    while ((SYSCTL_PRGPIO_R & 0x00000800) == 0) {}
-    GPIO_PORTM_DIR_R  &= ~0x03;
-    GPIO_PORTM_DEN_R  |=  0x03;
-    GPIO_PORTM_PUR_R  |=  0x03;
-}
-
-void PortH_Init(void) {
-    SYSCTL_RCGCGPIO_R |= 0x00000080;
-    while ((SYSCTL_PRGPIO_R & 0x00000080) == 0) {}
-    GPIO_PORTH_DIR_R  |=  0x0F;
-    GPIO_PORTH_DEN_R  |=  0x0F;
-    GPIO_PORTH_DATA_R &= ~0x0F;
+void PortK_Init(void) {
+    SYSCTL_RCGCGPIO_R |= 0x200;
+    while ((SYSCTL_PRGPIO_R & 0x000000200) == 0) {}
+    GPIO_PORTK_DIR_R  |=  0x0F;
+    GPIO_PORTK_DEN_R  |=  0x0F;
+    GPIO_PORTK_DATA_R &= ~0x0F;
 }
 
 //The VL53L1X needs to be reset using XSHUT.  We will use PG0
@@ -110,21 +94,32 @@ static const uint8_t WAVE_DRIVE[8] = {
 0x08
 };
 
-uint8_t ButtonPressed(void) { return (GPIO_PORTJ_DATA_R & 0x01) ? 0 : 1; } //helper function that sees if button is pressed
-void WaitForRelease(void) { while (ButtonPressed()) {} SysTick_Wait10ms(2); } //debouncing function
-
 void MotorStep(void){
 //go one step in stepper motor. Taken from deliverable 1 code.
-	GPIO_PORTH_DATA_R = (GPIO_PORTH_DATA_R & 0xF0) | WAVE_DRIVE[seqIndex];
+	GPIO_PORTK_DATA_R = (GPIO_PORTK_DATA_R & 0xF0) | WAVE_DRIVE[seqIndex];
 }
 
 void MotorStepCW(void){
-	//one step in CW direction
+	//one step in CW direction. Used when measuring
 	seqIndex = (seqIndex + 1) % SEQ_LEN;
 	MotorStep();
 }
 
+void MotorStepCCW(void){
+	//one step in CCW. FOr use after each scan. Should reduce tangling on wires
+	seqIndex = (seqIndex - 1 + SEQ_LEN) % SEQ_LEN;
+	MotorStep();
+}
 
+void MotorGoHome(void){
+	//Return after scan. Reduces tangling on wires
+	int total = NUM_MEASUREMENTS * STEPS_PER_MEAS;
+	
+	for (int i = 0; i < total; i++){
+		MotorStepCCW();
+		SysTick_Wait10ms(1);
+	}
+}
 //XSHUT     This pin is an active-low shutdown input; 
 //					the board pulls it up to VDD to enable the sensor by default. 
 //					Driving this pin low puts the sensor into hardware standby. This input is not level-shifted.
@@ -139,6 +134,7 @@ void VL53L1X_XSHUT(void){
 
 uint16_t	dev = 0x29;			//address of the ToF sensor as an I2C slave peripheral
 int status=0;
+
 
 int ToF_ReadDistance(void){
 	//A function that reads one distance measurement using the ToF, this should be called every 11.25 degrees
@@ -155,18 +151,6 @@ int ToF_ReadDistance(void){
 	  return distance;
 }
 
-float ToF_DistanceGetY(int distance, float angle){
-	//gives the Y from the distance measurement using the angle
-	float dy = distance * cos(angle);
-	return dy;
-}
-
-float ToF_DistanceGetZ(int distance, float angle){
-	//returns the Z from the distance given the angle
-	float dz = distance * sin(angle);
-	return dz;
-}
-
 void Scan(int scanIndex){
     int i;
     uint16_t distance;
@@ -179,7 +163,7 @@ void Scan(int scanIndex){
         LED_MotorOn();
         for (int s = 0; s < STEPS_PER_MEAS; s++){
             MotorStepCW();
-            SysTick_Wait10ms(2);
+            SysTick_Wait10ms(1);
         }
         LED_MotorOff();
 				SysTick_Wait10ms(10);
@@ -207,7 +191,8 @@ void Scan(int scanIndex){
 				
 				float angle_deg = i * 11.25;
 
-       // Instead of computing dy and dz, just send raw data
+       // Instead of computing dy and dz, just send raw data (matlab can calculate)
+				LED_UARTTxFlash();
 			sprintf(printf_buffer, "%d,%.2f,%u\r\n", scanIndex, angle_deg, (unsigned int)distance);
 			UART_printf(printf_buffer);
     }
@@ -215,27 +200,20 @@ void Scan(int scanIndex){
     VL53L1X_StopRanging(dev);   // STOP ONCE
 
     UART_printf("END\r\n");
-		
-		// Advance one extra 11.25 degrees to return to home position
-		for (int s = 0; s < STEPS_PER_MEAS; s++){
-			MotorStepCW();
-			SysTick_Wait10ms(2);
-		}
 }
 
 int main(void) {
 	
 	int scanIndex = 0;
+	int input = 0;
 	//initialize
 	PLL_Init();	
 	SysTick_Init();
 	I2C_Init();
-	UART_Init();
-	PortM_Init();																		
-	PortJ_Init();
+	UART_Init();																	
 	LED_init();
 	PortG_Init();
-	PortH_Init();
+	PortK_Init();
 	
 	//ToF getting ready
 	
@@ -252,22 +230,22 @@ int main(void) {
 	UART_printf("Ready. Press button to scan.\r\n");
 	
 	while(1){
-		if(ButtonPressed()){
-			WaitForRelease();
-			MotorRunning = true;
+		//only when the PC tells the MCU to scan does it scan
+		while(1){
+			input = UART_InChar();
+			if (input == 's')
+				break;
 		}
-		if(MotorRunning){
 		LED_UARTTxFlash(); //starting transmission of distance info
 		sprintf(printf_buffer, "SCAN, %d\r\n", scanIndex);
 		UART_printf(printf_buffer);
 			
 		Scan(scanIndex);
+		MotorGoHome();
 		scanIndex++;
 		MotorRunning = false;
 		}
 	}
-	
 
-}
 
 
