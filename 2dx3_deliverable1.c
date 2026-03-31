@@ -1,297 +1,272 @@
 #include <stdint.h>
-#include "tm4c1294ncpdt.h"
-#include "SysTick.h"
 #include "PLL.h"
+#include "SysTick.h"
+#include "uart.h"
+#include "onboardLEDs.h"
+#include "tm4c1294ncpdt.h"
+#include "VL53L1X_api.h"
+#include "stdio.h"
+#include <math.h>
+#include <stdbool.h>
 
-//Motor step configuration
-#define STEPS_PER_REV   2048  
+#define M_PI 3.14159265358979323846
+
+#define I2C_MCS_ACK             0x00000008
+#define I2C_MCS_DATACK          0x00000008
+#define I2C_MCS_ADRACK          0x00000004
+#define I2C_MCS_STOP            0x00000004
+#define I2C_MCS_START           0x00000002
+#define I2C_MCS_ERROR           0x00000002
+#define I2C_MCS_RUN             0x00000001
+#define I2C_MCS_BUSY            0x00000001
+#define I2C_MCR_MFE             0x00000010
+
+// Motor step configuration
+#define STEPS_PER_REV   2048
 #define STEPS_11_25     64
 #define STEPS_45        256
+#define SEQ_LEN         8
+#define MAXRETRIES      5
+
+#define NUM_MEASUREMENTS  32      // one every 11.25 degrees
+#define STEPS_PER_MEAS    64      // 64 half-steps = 11.25 degrees
 
 
-static const uint8_t WAVE_DRIVE[8] = {
+volatile bool StartScan = false;
+volatile bool StopScan  = false;
 
-0x01,
-0x02,
-0x04,
-0x08,
-0x01,
-0x02,
-0x04,
-0x08
-};
-#define SEQ_LEN 8
+int seqIndex    = 0;
+bool MotorRunning = false;
 
-//Global variables
-volatile uint8_t  motorRunning  = 0;   // 0 = stopped, 1 = running
-volatile uint8_t  directionCW   = 1;   // 1 = CW, 0 = CCW
-volatile uint8_t  angleFine     = 1;   // 1 = 11.25 deg, 0 = 45 deg
-         int      seqIndex      = 0;   // current position in half-step sequence
-         int      homeStep      = 0;   // absolute step count at home (0)
-         int      currentStep   = 0;   // absolute step count (wraps at STEPS_PER_REV)
-         int      stepCount     = 0;   // steps taken since motor started (for auto-stop)
-         int      stepsToBlink  = 0;   // steps accumulated toward next blink
 
-//Port initialisation
 void PortJ_Init(void) {
-    SYSCTL_RCGCGPIO_R |= 0x00000100;    // Enable clock for Port J
-    while ((SYSCTL_PRGPIO_R & 0x00000100) == 0) {}
-    GPIO_PORTJ_DIR_R  &= ~0x03;     // PJ1:PJ0 as inputs
-    GPIO_PORTJ_DEN_R  |=  0x03;     // Digital enable
-    GPIO_PORTJ_PUR_R  |=  0x03;     // Pull-up resistors (active low: press = 0)
-}
+    SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R8;               // enable clock for Port J
+    while ((SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R8) == 0) {}   // wait for ready
 
-void PortM_Init(void) {
-    SYSCTL_RCGCGPIO_R |= 0x00000800;    // Enable clock for Port M
-    while ((SYSCTL_PRGPIO_R & 0x00000800) == 0) {}
-    GPIO_PORTM_DIR_R  &= ~0x03;         // PM1:PM0 as inputs
-    GPIO_PORTM_DEN_R  |=  0x03;         // Digital enable
-    GPIO_PORTM_PDR_R  &= ~0x03;     // Disable pull-down
-    GPIO_PORTM_PUR_R  |=  0x03;     // Pull-up resistors (active low: press = 0)
-}
-
-void PortN_Init(void) {
-    SYSCTL_RCGCGPIO_R |= 0x00001000;    // Enable clock for Port N
-    while ((SYSCTL_PRGPIO_R & 0x00001000) == 0) {}
-    GPIO_PORTN_DIR_R  |=  0x03;         // PN1:PN0 as outputs
-    GPIO_PORTN_DEN_R  |=  0x03;
-    GPIO_PORTN_DATA_R &= ~0x03;         // Start with LEDs off
-}
-
-void PortF_Init(void) {
-    SYSCTL_RCGCGPIO_R |= 0x00000020;    // Enable clock for Port F
-    while ((SYSCTL_PRGPIO_R & 0x00000020) == 0) {}
-    GPIO_PORTF_DIR_R  |=  0x11;    // PF4 and PF0 as outputs
-    GPIO_PORTF_DEN_R  |=  0x11;
-    GPIO_PORTF_DATA_R &= ~0x11;    // Start with LEDs off
-}
-
-void PortH_Init(void) {
-    SYSCTL_RCGCGPIO_R |= 0x00000080;    // Enable clock for Port H
-    while ((SYSCTL_PRGPIO_R & 0x00000080) == 0) {}
-    GPIO_PORTH_DIR_R  |=  0x0F;    // PH3:PH0 as outputs
-    GPIO_PORTH_DEN_R  |=  0x0F;
-    GPIO_PORTH_DATA_R &= ~0x0F;    // Motor coils off
-}
-
-//LED helpers
-void LED0_Set(uint8_t on) {             // PN1 - motor running
-    if (on) GPIO_PORTN_DATA_R |=  0x02;
-    else    GPIO_PORTN_DATA_R &= ~0x02;
-}
-
-void LED1_Set(uint8_t on) {             // PN0 - CW direction
-    if (on) GPIO_PORTN_DATA_R |=  0x01;
-    else    GPIO_PORTN_DATA_R &= ~0x01;
-}
-
-void LED2_Set(uint8_t on) {             // PF4 - 11.25 deg mode
-    if (on) GPIO_PORTF_DATA_R |=  0x10;
-    else    GPIO_PORTF_DATA_R &= ~0x10;
-}
-
-void LED3_Toggle(void) {                // PF0 - blink per step
-    GPIO_PORTF_DATA_R ^= 0x01;
-}
-
-void LED3_Set(uint8_t on) {
-    if (on) GPIO_PORTF_DATA_R |=  0x01;
-    else    GPIO_PORTF_DATA_R &= ~0x01;
-}
-
-void AllLEDs_Clear(void) {
-    GPIO_PORTN_DATA_R &= ~0x03;
-    GPIO_PORTF_DATA_R &= ~0x11;
-}
-
-//Button read helpers
-uint8_t Button0_Pressed(void) { return (GPIO_PORTJ_DATA_R & 0x01) ? 0 : 1; }
-uint8_t Button1_Pressed(void) { return (GPIO_PORTJ_DATA_R & 0x02) ? 0 : 1; }
-uint8_t Button2_Pressed(void) { return (GPIO_PORTM_DATA_R & 0x01) ? 0 : 1; }
-uint8_t Button3_Pressed(void) { return (GPIO_PORTM_DATA_R & 0x02) ? 0 : 1; }
-
-//Motor helpers
-void Motor_Step(void) {
-    GPIO_PORTH_DATA_R = (GPIO_PORTH_DATA_R & 0xF0) | WAVE_DRIVE[seqIndex];
-    SysTick_Wait10ms(1);    // ~10 ms per step; adjust n as needed for motor speed
-}
-
-void Motor_Off(void) {
-    GPIO_PORTH_DATA_R &= ~0x0F;    // De-energise all coils
-}
-
-// Advance or retreat one half-step in current direction; update blink counter
-void Motor_Advance(void) {
-    if (directionCW) {
-        seqIndex = (seqIndex + 1) % SEQ_LEN;
-        currentStep = (currentStep + 1) % STEPS_PER_REV;
-    } else {
-        seqIndex = (seqIndex - 1 + SEQ_LEN) % SEQ_LEN;
-        currentStep = (currentStep - 1 + STEPS_PER_REV) % STEPS_PER_REV;
-    }
-    Motor_Step();
-    stepCount++;
-
-    // Determine how many steps between each LED3 blink
-    int stepsPerBlink = angleFine ? STEPS_11_25 : STEPS_45;
-    stepsToBlink++;
-    if (stepsToBlink >= stepsPerBlink) {
-        stepsToBlink = 0;
-        LED3_Toggle();
-				SysTick_Wait10ms(2);
-				LED3_Toggle();
-    }
-}
-
-// Return motor to home (0 degrees) via shortest path
-void Motor_GoHome(void) {
-    // Calculate steps to home going CW vs CCW and pick shorter path
-    int stepsForward  = (homeStep - currentStep + STEPS_PER_REV) % STEPS_PER_REV;
-    int stepsBackward = (currentStep - homeStep + STEPS_PER_REV) % STEPS_PER_REV;
-		AllLEDs_Clear();
-
-    int steps;
-    if (stepsForward <= stepsBackward) {
-        directionCW = 1;
-        steps = stepsForward;
-    } else {
-        directionCW = 0;
-        steps = stepsBackward;
-    }
-
-    for (int i = 0; i < steps; i++) {
-        if (directionCW) {
-            seqIndex = (seqIndex + 1) % SEQ_LEN;
-            currentStep = (currentStep + 1) % STEPS_PER_REV;
-        } else {
-            seqIndex = (seqIndex - 1 + SEQ_LEN) % SEQ_LEN;
-            currentStep = (currentStep - 1 + STEPS_PER_REV) % STEPS_PER_REV;
-        }
-        Motor_Step();
-    }
-		directionCW = 1;
-		angleFine = 1;
-		motorRunning = 0;
-}
-
-// --- Debounce helper ----------------------------------------------------------
-// Waits for button to be released and adds a short debounce delay
-void WaitForRelease_B0(void) { while (Button0_Pressed()) {} SysTick_Wait10ms(2); }
-void WaitForRelease_B1(void) { while (Button1_Pressed()) {} SysTick_Wait10ms(2); }
-void WaitForRelease_B2(void) { while (Button2_Pressed()) {} SysTick_Wait10ms(2); }
-void WaitForRelease_B3(void) { while (Button3_Pressed()) {} SysTick_Wait10ms(2); }
-
-//Main
-int main(void) {
-    // Initialise peripherals
-		SysTick_Init();
-		PLL_Init();
-    PortJ_Init();
-    PortM_Init();
-    PortN_Init();
-    PortF_Init();
-    PortH_Init();
-
-    // Set default state: motor stopped, CW, 11.25 deg mode
-    motorRunning = 0;
-    directionCW  = 1;
-    angleFine    = 1;
-    seqIndex     = 0;
-    currentStep  = 0;
-    homeStep     = 0;
-    stepCount    = 0;
-    stepsToBlink = 0;
+    GPIO_PORTJ_DIR_R  &= ~0x03;   
+    GPIO_PORTJ_DEN_R  |=  0x03;   
+    GPIO_PORTJ_PUR_R  |=  0x03;   
 	
-		//INSTRUCTIONS WERE UNCLEAR, CHANGE IF NEEDED
-    LED0_Set(0);    // Motor not running
-    LED1_Set(0);    // CW direction on by default, however, on boot, everything must be OFF
-    LED2_Set(0);    // 11.25 deg mode on by default, however, on boot, everything must be OFF
-    LED3_Set(0);
+		//interrupt config
+    GPIO_PORTJ_IS_R   &= ~0x03; //edge sensitive   
+    GPIO_PORTJ_IBE_R  &= ~0x03;  
+    GPIO_PORTJ_IEV_R  &= ~0x03;  
+    GPIO_PORTJ_ICR_R  |=  0x03;   
+    GPIO_PORTJ_IM_R   |=  0x03;   
+
+    NVIC_PRI12_R = (NVIC_PRI12_R & 0xFF00FFFF) | 0x00A00000; // priority 5 for Port J (IRQ 51)
+    NVIC_EN1_R  |= 0x00080000;    // enable IRQ 51 (Port J) in NVIC EN1 bit 19
+}
+
+
+void GPIOJ_IRQHandler(void) { //as a note to self, this only works under this exact name, if I change it the whole thing breaks
+    if (GPIO_PORTJ_MIS_R & 0x01) {      // PJ0 starts the scan
+        GPIO_PORTJ_ICR_R = 0x01; //interrupt acknowledge
+        if (!MotorRunning && !StopScan)  // if the motor is not running, and stopscan is not set (no one pressed PJ1) we set StartScan to 1
+            StartScan = true;            //this stops conditions where multiple presses of PJ0 set scans one after another, as well as someone ending scanning, then starting again
+    }
+    if (GPIO_PORTJ_MIS_R & 0x02) {      // PJ1 stops
+        GPIO_PORTJ_ICR_R = 0x02;
+        StopScan = true;
+    }
+}
+
+void I2C_Init(void) { //pulled from studio code.
+    SYSCTL_RCGCI2C_R  |= SYSCTL_RCGCI2C_R0;
+    SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R1;
+    while ((SYSCTL_PRGPIO_R & 0x0002) == 0) {}
+    GPIO_PORTB_AFSEL_R |= 0x0C;
+    GPIO_PORTB_ODR_R   |= 0x08;
+    GPIO_PORTB_DEN_R   |= 0x0C;
+    GPIO_PORTB_PCTL_R   = (GPIO_PORTB_PCTL_R & 0xFFFF00FF) + 0x00002200;
+    I2C0_MCR_R  = I2C_MCR_MFE;
+    I2C0_MTPR_R = 0b0000000000000101000000000111011;
+}
+
+void PortK_Init(void) { //Port K manages the motor
+    SYSCTL_RCGCGPIO_R |= 0x200;
+    while ((SYSCTL_PRGPIO_R & 0x000000200) == 0) {}
+    GPIO_PORTK_DIR_R  |=  0x0F;
+    GPIO_PORTK_DEN_R  |=  0x0F;
+    GPIO_PORTK_DATA_R &= ~0x0F;
+}
+
+void PortM_Init(void)
+{
+	SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R11;
+	while ((SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R11) == 0) {}
+	GPIO_PORTM_DIR_R |=  0x01; //port M0 is a digital output pin. going to use for the clock demo
+	GPIO_PORTM_DEN_R |= 0x01;	
+}
+
+void PortG_Init(void) { //port G has to do with ToF shutdown. Taken from studios
+    SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R6;
+    while ((SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R6) == 0) {}
+    GPIO_PORTG_DIR_R  &=  0x00;
+    GPIO_PORTG_AFSEL_R &= ~0x01;
+    GPIO_PORTG_DEN_R  |=  0x01;
+    GPIO_PORTG_AMSEL_R &= ~0x01;
+}
+
+static const uint8_t WAVE_DRIVE[8] = { 0x01, 0x02, 0x04, 0x08, 0x01, 0x02, 0x04, 0x08 }; //the steps of a wave drive step to the motor
+
+void MotorStep(void) { //move motor one step
+    GPIO_PORTK_DATA_R = (GPIO_PORTK_DATA_R & 0xF0) | WAVE_DRIVE[seqIndex];
+}
+
+void MotorStepCW(void) { //move motor CW one step. Used when scanning.
+    seqIndex = (seqIndex + 1) % SEQ_LEN;
+    MotorStep();
+}
+
+void MotorStepCCW(void) { //move motor CCW one step. Used when going home
+    seqIndex = (seqIndex - 1 + SEQ_LEN) % SEQ_LEN;
+    MotorStep();
+}
+
+void MotorGoHome(void) {  //rotate 360 degrees CCW after each scan. Helps with detangling the wires. 
+    int total = NUM_MEASUREMENTS * STEPS_PER_MEAS;
+    LED_MotorOn();
+    for (int i = 0; i < total; i++) {
+        MotorStepCCW();
+        SysTick_Wait10ms(1);
+    }
+    LED_MotorOff();
+}
+
+void VL53L1X_XSHUT(void){ //pulled from studio code
+    GPIO_PORTG_DIR_R  |=  0x01;
+    GPIO_PORTG_DATA_R &=  0b11111110;
+    SysTick_Wait10ms(10);
+    GPIO_PORTG_DIR_R  &= ~0x01;
+}
+
+uint16_t dev = 0x29; //address of the ToF as a follower in I2C
+int status = 0;
+
+void Scan(int scanIndex) {
+    int i;
+    uint16_t distance;
+		LED_UARTTxFlash();
+    UART_printf("START\r\n");   // MATLAB uses this to start a new ring
+
+    VL53L1X_StartRanging(dev);
+
+    for (i = 0; i < NUM_MEASUREMENTS; i++) {
+
+        //Check for stop signal between every movement
+        if (StopScan) {
+            VL53L1X_StopRanging(dev);
+						LED_UARTTxFlash();
+            UART_printf("END\r\n");   // close the partial ring in MATLAB
+            UART_printf("STOP\r\n");  // tell MATLAB to graph now
+            while (1) {}              // permanenent stop. PJ1 turns the whole thing off.
+        }
+
+        //Stepper motor movements 
+        LED_MotorOn();
+        for (int s = 0; s < STEPS_PER_MEAS; s++) {
+            MotorStepCW();
+            SysTick_Wait10ms(1);
+        }
+        LED_MotorOff();
+        SysTick_Wait10ms(10);
+
+        //Wait for ToF data
+        uint8_t ready   = 0;
+        int     timeout = 100;
+        while ((ready == 0) && (timeout > 0)) {
+						//if not read, wait, check again until timeout
+            VL53L1X_CheckForDataReady(dev, &ready);
+            SysTick_Wait10ms(2);
+            timeout--;
+        }
+        if (timeout == 0) {
+						LED_UARTTxFlash();
+            UART_printf("ToF timeout\r\n");
+            continue;
+        }
+
+        //read and send distance data
+        VL53L1X_GetDistance(dev, &distance);
+        VL53L1X_ClearInterrupt(dev);
+
+        LED_MeasurementFlash();
+        LED_UARTTxFlash();
+
+        float angle_deg = i * 11.25f;
+        sprintf(printf_buffer, "%d,%.2f,%u\r\n", scanIndex, angle_deg, (unsigned int)distance);
+        UART_printf(printf_buffer);
+    }
+
+    VL53L1X_StopRanging(dev);
+		LED_UARTTxFlash();
+    UART_printf("END\r\n");
+}
+
+int main(void) {
+    int scanIndex = 0;
+		//init function calls
+    PLL_Init();
+    SysTick_Init();
+    I2C_Init();
+    UART_Init();
+    LED_init();
+    PortG_Init();
+    PortK_Init();
+    PortJ_Init();
+
+    //ToF boot
+    uint8_t sensorState = 0;
+    while (sensorState == 0) {
+        VL53L1X_BootState(dev, &sensorState);
+        SysTick_Wait10ms(10);
+    }
+		LED_UARTTxFlash();
+    UART_printf("ToF Booted.\r\n");
+
+		//ToF init
+    VL53L1X_SensorInit(dev);
+    VL53L1X_SetDistanceMode(dev, 2);
+    VL53L1X_SetTimingBudgetInMs(dev, 100);
+	
+		LED_UARTTxFlash();
+    UART_printf("Press PJ0 to start, PJ1 to finish\r\n");
 
     while (1) {
 
-        //Button 0: Start / Stop
-        if (Button0_Pressed()) {
-            WaitForRelease_B0();
-            motorRunning = !motorRunning;
-            if (motorRunning) {
-                stepCount    = 0;
-                stepsToBlink = 0;
-                LED0_Set(1);
-                // Restore direction LED
-                LED1_Set(directionCW);
-                // Restore angle LED only when motor running
-                LED2_Set(angleFine);
-            } else {
-                Motor_Off();
-								homeStep = currentStep; //updating the home position after each pause (THIS IS WHAT TAS WANT)
-                //MANAGING LEDS WHEN BUTTON PRESSED TO TURN OFF, IF TA MENTIONS, CHANGE
-								LED0_Set(0);
-								LED1_Set(0);
-								LED2_Set(0);
-                LED3_Set(0);
-            }
+        //wait for input to comin
+        while (!StartScan && !StopScan) {}
+
+        //PJ1 pressed before any scan started
+        if (StopScan) {
+            UART_printf("STOP\r\n");  // tell MATLAB to graph (even if empty)
+            while (1) {}              // permament stop. Board must reset to go again.
         }
 
-        //Button 1: Direction toggle
-        if (Button1_Pressed()) {
-            WaitForRelease_B1();
-            directionCW = !directionCW;
-						if(motorRunning){
-            LED1_Set(directionCW);
-						}
+        //PJ0 pressed
+        StartScan    = false; //set false to prevent one press doing multiple scans
+        MotorRunning = true;
+
+        LED_UARTTxFlash();
+
+        Scan(scanIndex);        // scans and sends data
+        MotorGoHome();
+
+        MotorRunning = false;
+
+        // edge case, PJ1 is pressed during going home (matlab needs the stop signal)
+        if (StopScan) {
+						LED_UARTTxFlash();
+            UART_printf("STOP\r\n");
+            while (1) //infinite while loop to show frequency with AD3. period should be 1can 0 ms 
+							{
+								GPIO_PORTM_DATA_R ^= 0x01;
+								SysTick_Wait(180000);
+								GPIO_PORTM_DATA_R ^= 0x01;
+							}
         }
 
-        //Button 2: Angle toggle
-        if (Button2_Pressed()) {
-            WaitForRelease_B2();
-            angleFine    = !angleFine;
-            stepsToBlink = 0;   // Reset blink counter so blinks align to new angle
-            if (motorRunning) {
-                LED2_Set(angleFine);
-            }
-        }
-
-        //Button 3: Home
-        if (Button3_Pressed()) {
-            WaitForRelease_B3();
-            Motor_GoHome();
-            Motor_Off();
-            motorRunning = 0;
-            directionCW  = 1;   // Reset to default CW for next run
-            stepCount    = 0;
-            stepsToBlink = 0;
-            AllLEDs_Clear();
-            // Restore direction default (CW on) and angle default LED off
-            // All LEDs off per spec: "motor ceases operation with all status outputs cleared"
-        }
-
-        //Motor running: advance one half-step
-        if (motorRunning) {
-            Motor_Advance();
-
-            // Auto-stop after one full rotation (360 degrees)
-            if (stepCount >= STEPS_PER_REV) {
-                Motor_Off();
-                motorRunning = 0;
-                stepCount    = 0;
-                stepsToBlink = 0;
-								//MANUAL UNCLEAR, WHAT TURNS OFF AFTER 360 DEGREES
-                LED0_Set(0);
-								LED1_Set(0);
-                LED2_Set(0);
-                LED3_Set(0);
-            }
-        }
-
-    }  // end while(1)
+        scanIndex++;
+    }
 }
-
-void Start()
-{
-main();
-}
-
-
-
-
