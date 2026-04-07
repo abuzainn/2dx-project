@@ -150,7 +150,7 @@ void Scan(int scanIndex) {
 		LED_UARTTxFlash();
     UART_printf("START\r\n");   // MATLAB uses this to start a new ring
 
-    VL53L1X_StartRanging(dev);
+    //VL53L1X_StartRanging(dev);
 
     for (i = 0; i < NUM_MEASUREMENTS; i++) {
 
@@ -173,15 +173,17 @@ void Scan(int scanIndex) {
         SysTick_Wait10ms(10);
 
         //Wait for ToF data
+				VL53L1X_ClearInterrupt(dev);
+				SysTick_Wait10ms(1);
         uint8_t ready   = 0;
-        int     timeout = 100;
+        int     timeout = 200;
         while ((ready == 0) && (timeout > 0)) {
 						//if not read, wait, check again until timeout
             VL53L1X_CheckForDataReady(dev, &ready);
             SysTick_Wait10ms(2);
             timeout--;
         }
-        if (timeout == 0) {
+        if (!ready) {
 						LED_UARTTxFlash();
             UART_printf("ToF timeout\r\n");
             continue;
@@ -199,7 +201,7 @@ void Scan(int scanIndex) {
         UART_printf(printf_buffer);
     }
 
-    VL53L1X_StopRanging(dev);
+    //VL53L1X_StopRanging(dev);
 		LED_UARTTxFlash();
     UART_printf("END\r\n");
 }
@@ -229,6 +231,8 @@ int main(void) {
     VL53L1X_SensorInit(dev);
     VL53L1X_SetDistanceMode(dev, 2);
     VL53L1X_SetTimingBudgetInMs(dev, 100);
+		VL53L1X_SetInterMeasurementInMs(dev, 120);
+		VL53L1X_StartRanging(dev);
 	
 		LED_UARTTxFlash();
     UART_printf("Press PJ0 to start, PJ1 to finish\r\n");
